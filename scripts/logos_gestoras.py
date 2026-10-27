@@ -41,7 +41,6 @@ GESTORAS = {
   'bnpparibas': ('BNP Paribas', 'bnpparibas-am.com', ['BNP PARIBAS']),
   'mapfre': ('Mapfre', 'mapfre.com.br', ['MAPFRE']),
   'sulamerica': ('SulAmérica', 'sulamericainvestimentos.com.br', ['SUL AMÉRICA', 'SUL AMERICA', 'SULAMÉRICA', 'SULAMERICA']),
-  'maginvest': ('MAG Investimentos', 'maginvestimentos.com.br', ['MONGERAL', 'MAG INVEST']),
   'portoseguro': ('Porto Seguro', 'portoseguro.com.br', ['PORTO SEGURO', 'PORTO ASSET']),
   'icatu': ('Icatu', 'icatu.com.br', ['ICATU']),
   'brasilprev': ('Brasilprev', 'brasilprev.com.br', ['BRASILPREV']),
@@ -161,14 +160,25 @@ def principal():
     try: indice = json.load(open(ind_path, encoding='utf-8'))
     except Exception: indice = {}
     refazer = os.environ.get('REFAZER') == '1'
+    # gestora cujo site não entregou ícone: tenta de novo só depois de 7 dias (o robô roda todo dia)
+    fal_path = os.path.join(PASTA, 'falhas.json')
+    try: falhas = json.load(open(fal_path, encoding='utf-8'))
+    except Exception: falhas = {}
+    hoje = time.strftime('%Y-%m-%d')
+    def recente(d):
+        try: return (time.mktime(time.strptime(hoje, '%Y-%m-%d')) - time.mktime(time.strptime(d, '%Y-%m-%d'))) < 7 * 86400
+        except Exception: return False
     ok = falhou = 0
     for chave, (nome, site, termos) in GESTORAS.items():
         arq = os.path.join(PASTA, chave + '.png')
         if not refazer and chave in indice and os.path.exists(arq):
             indice[chave]['termos'] = termos; indice[chave]['n'] = nome
             continue
+        if not refazer and chave in falhas and recente(falhas[chave]):
+            continue
         melhor = None
         for u in candidatos(site):
+            if 'wp-includes' in u or 'w-logo' in u: continue
             try:
                 dados, tipo, _ = baixar(u)
             except Exception:
@@ -179,7 +189,7 @@ def principal():
                 melhor = (im, u)
             if im.size[0] >= 128: break
         if not melhor:
-            print('✗', chave, site); falhou += 1; indice.pop(chave, None); continue
+            print('✗', chave, site); falhou += 1; indice.pop(chave, None); falhas[chave] = hoje; continue
         im, u = melhor
         im = im.resize((128, 128), Image.LANCZOS)
         im.save(arq, 'PNG', optimize=True)
@@ -193,6 +203,7 @@ def principal():
             try: os.remove(os.path.join(PASTA, k + '.png'))
             except OSError: pass
     json.dump(indice, open(ind_path, 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
+    json.dump({k: v for k, v in falhas.items() if k in GESTORAS and k not in indice}, open(fal_path, 'w', encoding='utf-8'))
     print('logos novos: %d, falharam: %d, no índice: %d' % (ok, falhou, len(indice)))
 
 if __name__ == '__main__':
