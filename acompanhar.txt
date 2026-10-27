@@ -1,0 +1,5 @@
+# Fundos com histórico diário completo (desde 2000), além dos que os alunos cadastrarem no G20 Hub.
+# Um CNPJ por linha (com ou sem pontuação). Para subclasse: CNPJ_IDSUBCLASSE. Texto depois de # é ignorado.
+12987743000186   # Alaska (teste)
+26648868000196   # Alaska (teste)
+32893503000120   # Trend DI Simples (teste)
