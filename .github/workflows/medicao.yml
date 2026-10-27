@@ -9,7 +9,7 @@ on:
         description: 'Ano antigo para amostra do histórico'
         default: '2015'
 permissions:
-  contents: read
+  contents: write
 jobs:
   medir:
     runs-on: ubuntu-24.04
@@ -30,3 +30,10 @@ jobs:
           name: relatorio-medicao
           path: relatorio-medicao.md
           if-no-files-found: ignore
+      - name: Gravar o relatório no repositório (pasta relatorios)
+        if: always()
+        run: |
+          mkdir -p relatorios && cp relatorio-medicao.md relatorios/medicao.md || exit 0
+          git config user.name "G20 Fundos"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add relatorios && git commit -m "Relatório da medição" && git pull --rebase origin main && git push origin HEAD:main || true
