@@ -22,7 +22,7 @@ UA = 'Mozilla/5.0 (G20 Fundos; logos)'
 # chave: (nome, site, [termos que aparecem no nome do gestor na CVM])
 GESTORAS = {
   'alaska': ('Alaska', 'alaska-asset.com.br', ['ALASKA']),
-  'verde': ('Verde Asset', 'verdeasset.com.br', ['VERDE ASSET']),
+  'verde': ('Verde Asset', 'www.verdeasset.com.br', ['VERDE ASSET']),
   'spx': ('SPX', 'spxcapital.com.br', ['SPX ']),
   'kapitalo': ('Kapitalo', 'kapitalo.com.br', ['KAPITALO']),
   'dynamo': ('Dynamo', 'dynamo.com.br', ['DYNAMO']),
@@ -41,7 +41,7 @@ GESTORAS = {
   'bnpparibas': ('BNP Paribas', 'bnpparibas-am.com', ['BNP PARIBAS']),
   'mapfre': ('Mapfre', 'mapfre.com.br', ['MAPFRE']),
   'sulamerica': ('SulAmérica', 'sulamericainvestimentos.com.br', ['SUL AMÉRICA', 'SUL AMERICA', 'SULAMÉRICA', 'SULAMERICA']),
-  'mag': ('MAG Investimentos', 'mag.com.br', ['MONGERAL', 'MAG INVEST']),
+  'maginvest': ('MAG Investimentos', 'maginvestimentos.com.br', ['MONGERAL', 'MAG INVEST']),
   'portoseguro': ('Porto Seguro', 'portoseguro.com.br', ['PORTO SEGURO', 'PORTO ASSET']),
   'icatu': ('Icatu', 'icatu.com.br', ['ICATU']),
   'brasilprev': ('Brasilprev', 'brasilprev.com.br', ['BRASILPREV']),
@@ -104,7 +104,7 @@ GESTORAS = {
 
 def baixar(url, limite=3_000_000):
     req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': '*/*'})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=12) as r:
         return r.read(limite), r.headers.get('Content-Type', ''), r.geturl()
 
 def imagem(dados):
@@ -125,7 +125,10 @@ def candidatos(site):
     base = 'https://' + site
     out = [base + '/apple-touch-icon.png', base + '/apple-touch-icon-precomposed.png']
     try:
-        html, _, final = baixar(base + '/', 800_000)
+        try:
+            html, _, final = baixar(base + '/', 800_000)
+        except Exception:
+            html, _, final = baixar('https://' + (site[4:] if site.startswith('www.') else 'www.' + site) + '/', 800_000)
         html = html.decode('utf-8', 'ignore')
         links = re.findall(r'<link[^>]+>', html, re.I)
         achados = []
@@ -139,7 +142,9 @@ def candidatos(site):
         out = [u for _, u in achados if not u.lower().endswith('.svg')] + out
     except Exception as e:
         print('   página inicial falhou:', e)
-    out += [base + '/favicon.ico', 'https://www.google.com/s2/favicons?domain=' + site + '&sz=128']
+    nu = site[4:] if site.startswith('www.') else 'www.' + site
+    out += [base + '/favicon.ico', 'https://' + nu + '/apple-touch-icon.png', 'https://' + nu + '/favicon.ico',
+            'https://www.google.com/s2/favicons?domain=' + site + '&sz=256', 'https://icons.duckduckgo.com/ip3/' + site.replace('www.', '') + '.ico']
     vistos, lim = set(), []
     for u in out:
         if u not in vistos: vistos.add(u); lim.append(u)
@@ -182,6 +187,11 @@ def principal():
         indice[chave] = { 'n': nome, 'termos': termos, 'fundo': 'escuro' if lum > 0.62 else 'claro', 'fonte': u.split('/')[2] }
         print('✓', chave, im.size, u, round(lum, 2)); ok += 1
         time.sleep(0.3)
+    for k in list(indice.keys()):
+        if k not in GESTORAS:
+            indice.pop(k, None)
+            try: os.remove(os.path.join(PASTA, k + '.png'))
+            except OSError: pass
     json.dump(indice, open(ind_path, 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
     print('logos novos: %d, falharam: %d, no índice: %d' % (ok, falhou, len(indice)))
 
