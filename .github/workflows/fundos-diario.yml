@@ -46,8 +46,12 @@ jobs:
           git clone --depth 1 --branch dados "https://github.com/${GITHUB_REPOSITORY}.git" pub || mkdir -p pub
           rm -rf pub/.git
 
+      - name: Biblioteca da conta de serviço do Firebase
+        run: pip install --quiet google-auth requests
+
       - name: Atualizar
         env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           MODO: ${{ github.event.inputs.modo || 'normal' }}
           OUT: pub
           CACHE: cache

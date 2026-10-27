@@ -269,6 +269,21 @@ def ler_cadastro():
     return cad
 
 # ───────────────────────── fundos acompanhados ─────────────────────────
+def token_firebase():
+    """Token da conta de serviço do Firebase (segredo FIREBASE_SERVICE_ACCOUNT do repositório).
+    Com ele o robô lê fundosAcompanhados, que pelas regras ninguém lê pelo site."""
+    sa = os.environ.get('FIREBASE_SERVICE_ACCOUNT', '').strip()
+    if not sa: return None
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        cred = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=['https://www.googleapis.com/auth/datastore'])
+        cred.refresh(Request())
+        return cred.token
+    except Exception as e:
+        log('Conta de serviço do Firebase não funcionou: %r' % e)
+        return None
+
 def acompanhados():
     ks = set()
     try:
@@ -279,20 +294,25 @@ def acompanhados():
                 ks.add(chave(partes[0], partes[1] if len(partes) > 1 else ''))
     except FileNotFoundError:
         pass
-    url = FIRESTORE; n = 0
+    tok = token_firebase()
+    url = FIRESTORE + '&mask.fieldPaths=em'; n = 0
+    if not tok:
+        log('Sem a conta de serviço do Firebase: seguindo só com acompanhar.txt')
+        url = None
     try:
         while url:
-            d = json.loads(baixar(url) or b'{}')
+            req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'G20-Fundos/1.0'})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                d = json.loads(r.read() or b'{}')
             for doc in d.get('documents', []):
-                k = doc['name'].rsplit('/', 1)[-1]
-                k = re.sub(r'[^0-9A-Za-z_]', '', k).upper()
+                k = re.sub(r'[^0-9A-Za-z_]', '', doc['name'].rsplit('/', 1)[-1]).upper()
                 if k: ks.add(k); n += 1
-            tok = d.get('nextPageToken')
-            url = FIRESTORE + '&pageToken=' + tok if tok else None
+            pt = d.get('nextPageToken')
+            url = FIRESTORE + '&mask.fieldPaths=em&pageToken=' + pt if pt else None
     except Exception as e:
-        log('Firestore (fundosAcompanhados) indisponível, seguindo só com acompanhar.txt: %r' % e)
+        log('Não li fundosAcompanhados: %r' % e)
     ks.discard('')
-    log('Acompanhados: %d (Firestore: %d)' % (len(ks), n))
+    log('Acompanhados: %d (dos alunos: %d)' % (len(ks), n))
     return ks
 
 # ───────────────────────── principal ─────────────────────────
@@ -307,7 +327,7 @@ def principal():
     completo = MODO == 'completo' or not os.path.isdir(os.path.join(OUT, 'mensal')) or meta_ant.get('mensal_desde') != ANO_MENSAL
 
     cad = ler_cadastro()
-    seguir = acompanhados()
+    seguir = {k for k in acompanhados() if k in cad or k.split('_')[0] in cad}
     hist_dir = os.path.join(OUT, 'historico')
     os.makedirs(hist_dir, exist_ok=True)
     ja_tem = {f[:-5] for f in os.listdir(hist_dir) if f.endswith('.json')}
