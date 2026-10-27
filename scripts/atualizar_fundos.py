@@ -38,6 +38,7 @@ FIRESTORE = ('https://firestore.googleapis.com/v1/projects/g20-masterclass/datab
 OUT = os.environ.get('OUT', 'pub')
 CACHE = os.environ.get('CACHE', 'cache')
 MODO = os.environ.get('MODO', 'normal')
+if MODO == 'logos': MODO = 'normal'
 ANO_MENSAL = 2010          # histórico mensal de todos os fundos começa aqui
 ANO_HIST_INI = 2000        # histórico diário dos acompanhados começa aqui
 PRIMEIRO_MES_DADOS = (2021, 1)  # antes disso a CVM publica por ano (pasta HIST)

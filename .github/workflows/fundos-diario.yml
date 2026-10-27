@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       modo:
-        description: 'normal ou completo (refaz o histórico mensal desde 2010)'
+        description: 'normal, completo (refaz o histórico mensal desde 2010) ou logos (baixa de novo os logos das gestoras)'
         default: 'normal'
 permissions:
   contents: write
@@ -52,6 +52,14 @@ jobs:
           OUT: pub
           CACHE: cache
         run: python scripts/atualizar_fundos.py
+
+      - name: Logos das gestoras (só na primeira vez, gestora nova ou modo logos)
+        env:
+          OUT: pub
+          REFAZER: ${{ github.event.inputs.modo == 'logos' && '1' || '0' }}
+        run: |
+          pip install --quiet pillow
+          python scripts/logos_gestoras.py || echo "logos: falhou, segue sem trocar os que já existem"
 
       - name: Gravar na branch dados (sem histórico, para o repositório não inchar)
         run: |
