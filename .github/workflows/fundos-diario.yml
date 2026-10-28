@@ -1,10 +1,15 @@
 name: Fundos (CVM) diário
 # Atualiza cotas e cadastro dos fundos de investimento (dados abertos da CVM) e publica no Pages do g20-fundos.
-# Horários de Brasília: 09:30 (seg a sáb) e 20:30 (seg a sex). Repositório público: minutos grátis.
+# Atualização completa (Brasília): 09:30 (seg a sáb) e 20:30 (seg a sex).
+# Verificação rápida a cada 2 horas, das 8h às 22h (Brasília): só pergunta ao Firebase se algum aluno
+# cadastrou fundo novo; se sim, roda a atualização completa para montar o histórico dele; se não,
+# termina em segundos, sem baixar nada nem publicar nada. Repositório público: minutos grátis.
 on:
   schedule:
     - cron: '30 12 * * 1-6'
     - cron: '30 23 * * 1-5'
+    - cron: '0 11-23/2 * * *'
+    - cron: '0 1 * * *'
   workflow_dispatch:
     inputs:
       modo:
@@ -18,7 +23,31 @@ concurrency:
   group: fundos-diario
   cancel-in-progress: false
 jobs:
+  verificar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tem_novos: ${{ steps.v.outputs.tem_novos }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event.schedule == '0 11-23/2 * * *' || github.event.schedule == '0 1 * * *'
+      - uses: actions/setup-python@v5
+        if: github.event.schedule == '0 11-23/2 * * *' || github.event.schedule == '0 1 * * *'
+        with:
+          python-version: '3.12'
+      - id: v
+        env:
+          RAPIDA: ${{ github.event.schedule == '0 11-23/2 * * *' || github.event.schedule == '0 1 * * *' }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$RAPIDA" != "true" ]; then echo "tem_novos=sim" >> "$GITHUB_OUTPUT"; exit 0; fi
+          pip install --quiet google-auth requests
+          python scripts/verificar_novos.py
+
   atualizar:
+    needs: verificar
+    if: needs.verificar.outputs.tem_novos == 'sim'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     environment:

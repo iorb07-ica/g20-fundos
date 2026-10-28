@@ -284,9 +284,34 @@ def token_firebase():
         log('Conta de serviço do Firebase não funcionou: %r' % e)
         return None
 
-ESTADO_FS = {'situacao': 'não tentou', 'dos_alunos': 0}
+ESTADO_FS = {'situacao': 'não tentou', 'novos_lidos': 0, 'ate': ''}
+RUNQUERY = ('https://firestore.googleapis.com/v1/projects/g20-masterclass/databases/(default)/documents:runQuery')
 
-def acompanhados():
+def ler_fs_desde(tok, desde):
+    """Só os fundos cadastrados (ou renovados) depois de 'desde'. Cada documento devolvido conta
+    1 leitura no Firestore; sem novidade, a consulta custa 1 leitura só."""
+    q = {'structuredQuery': {'from': [{'collectionId': 'fundosAcompanhados'}], 'select': {'fields': [{'fieldPath': 'em'}]},
+         'orderBy': [{'field': {'fieldPath': 'em'}, 'direction': 'ASCENDING'}], 'limit': 5000}}
+    if desde:
+        q['structuredQuery']['where'] = {'fieldFilter': {'field': {'fieldPath': 'em'}, 'op': 'GREATER_THAN', 'value': {'timestampValue': desde}}}
+    req = urllib.request.Request(RUNQUERY, data=json.dumps(q).encode(), method='POST',
+                                 headers={'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json', 'User-Agent': 'G20-Fundos/1.0'})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        res = json.loads(r.read() or b'[]')
+    ks, ate = set(), desde or ''
+    for item in res:
+        d = item.get('document')
+        if not d: continue
+        k = re.sub(r'[^0-9A-Za-z_]', '', d['name'].rsplit('/', 1)[-1]).upper()
+        em = ((d.get('fields') or {}).get('em') or {}).get('timestampValue', '')
+        if k: ks.add(k)
+        if em > ate: ate = em
+    return ks, ate
+
+def acompanhados(desde=''):
+    """Fundos para guardar o histórico diário completo: os do acompanhar.txt e os que os alunos
+    cadastraram desde a última rodada (os já guardados continuam sendo atualizados pelo que
+    já existe em historico/)."""
     ks = set()
     try:
         for l in open('acompanhar.txt', encoding='utf-8'):
@@ -297,29 +322,20 @@ def acompanhados():
     except FileNotFoundError:
         pass
     tok = token_firebase()
-    url = FIRESTORE + '&mask.fieldPaths=em'; n = 0
+    ESTADO_FS['ate'] = desde or ''
     if not tok:
         log('Sem a conta de serviço do Firebase: seguindo só com acompanhar.txt')
         ESTADO_FS['situacao'] = 'sem a chave do Firebase'
-        url = None
     else:
-        ESTADO_FS['situacao'] = 'ok'
-    try:
-        while url:
-            req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'G20-Fundos/1.0'})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                d = json.loads(r.read() or b'{}')
-            for doc in d.get('documents', []):
-                k = re.sub(r'[^0-9A-Za-z_]', '', doc['name'].rsplit('/', 1)[-1]).upper()
-                if k: ks.add(k); n += 1
-            pt = d.get('nextPageToken')
-            url = FIRESTORE + '&mask.fieldPaths=em&pageToken=' + pt if pt else None
-    except Exception as e:
-        log('Não li fundosAcompanhados: %r' % e)
-        ESTADO_FS['situacao'] = 'erro: ' + str(e)[:120]
+        try:
+            novos, ate = ler_fs_desde(tok, desde)
+            ks |= novos
+            ESTADO_FS.update({'situacao': 'ok', 'novos_lidos': len(novos), 'ate': ate})
+            log('Fundos cadastrados pelos alunos desde %s: %d' % (desde or 'o início', len(novos)))
+        except Exception as e:
+            log('Não li fundosAcompanhados: %r' % e)
+            ESTADO_FS['situacao'] = 'erro: ' + str(e)[:120]
     ks.discard('')
-    ESTADO_FS['dos_alunos'] = n
-    log('Acompanhados: %d (dos alunos: %d)' % (len(ks), n))
     return ks
 
 # ───────────────────────── principal ─────────────────────────
@@ -334,10 +350,10 @@ def principal():
     completo = MODO == 'completo' or not os.path.isdir(os.path.join(OUT, 'mensal')) or meta_ant.get('mensal_desde') != ANO_MENSAL
 
     cad = ler_cadastro()
-    seguir = {k for k in acompanhados() if k in cad or k.split('_')[0] in cad}
     hist_dir = os.path.join(OUT, 'historico')
     os.makedirs(hist_dir, exist_ok=True)
     ja_tem = {f[:-5] for f in os.listdir(hist_dir) if f.endswith('.json')}
+    seguir = {k for k in acompanhados(meta_ant.get('fs_ate', '')) if k in cad or k.split('_')[0] in cad} | ja_tem
     novos_hist = seguir - ja_tem
     log('Modo %s · histórico novo para %d fundos' % ('COMPLETO' if completo else 'normal', len(novos_hist)))
 
@@ -473,7 +489,8 @@ def principal():
         'fundos_com_cota_recente': len(ultima),
         'fundos_encerrados_no_indice': len(encerrados),
         'acompanhados': len(seguir),
-        'lista_dos_alunos': ESTADO_FS,
+        'lista_dos_alunos': {'situacao': ESTADO_FS['situacao'], 'novos_nesta_rodada': ESTADO_FS['novos_lidos']},
+        'fs_ate': ESTADO_FS['ate'],
         'eventos': len(eventos),
         'modo': 'completo' if completo else 'normal',
         'segundos': int(time.time() - t0),
