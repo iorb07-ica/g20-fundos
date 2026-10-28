@@ -284,6 +284,8 @@ def token_firebase():
         log('Conta de serviço do Firebase não funcionou: %r' % e)
         return None
 
+ESTADO_FS = {'situacao': 'não tentou', 'dos_alunos': 0}
+
 def acompanhados():
     ks = set()
     try:
@@ -298,7 +300,10 @@ def acompanhados():
     url = FIRESTORE + '&mask.fieldPaths=em'; n = 0
     if not tok:
         log('Sem a conta de serviço do Firebase: seguindo só com acompanhar.txt')
+        ESTADO_FS['situacao'] = 'sem a chave do Firebase'
         url = None
+    else:
+        ESTADO_FS['situacao'] = 'ok'
     try:
         while url:
             req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok, 'User-Agent': 'G20-Fundos/1.0'})
@@ -311,7 +316,9 @@ def acompanhados():
             url = FIRESTORE + '&mask.fieldPaths=em&pageToken=' + pt if pt else None
     except Exception as e:
         log('Não li fundosAcompanhados: %r' % e)
+        ESTADO_FS['situacao'] = 'erro: ' + str(e)[:120]
     ks.discard('')
+    ESTADO_FS['dos_alunos'] = n
     log('Acompanhados: %d (dos alunos: %d)' % (len(ks), n))
     return ks
 
@@ -466,6 +473,7 @@ def principal():
         'fundos_com_cota_recente': len(ultima),
         'fundos_encerrados_no_indice': len(encerrados),
         'acompanhados': len(seguir),
+        'lista_dos_alunos': ESTADO_FS,
         'eventos': len(eventos),
         'modo': 'completo' if completo else 'normal',
         'segundos': int(time.time() - t0),
