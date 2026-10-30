@@ -18,6 +18,8 @@ Site com os dados: https://iorb07-ica.github.io/g20-fundos/
 | `diario/{3 primeiros do CNPJ}.json` | Cotas diárias dos últimos 13 meses |
 | `mensal/{3 primeiros do CNPJ}.json` | Cota de fim de mês desde 2010 |
 | `historico/{chave}.json` | Diário completo desde 2000 dos fundos acompanhados |
+
+FII, FIAGRO e FIDC sem ticker na B3 entram com cota mensal (informes mensais da CVM), marcados com `fr: "M"` no índice. Os com ticker ficam na Renda Variável do G20 Hub.
 | `eventos.json` | Saltos anormais de cota e fundos acompanhados sem cota recente |
 
 `acompanhar.txt`: fundos com histórico diário completo além dos cadastrados pelos alunos.

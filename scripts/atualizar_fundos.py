@@ -338,6 +338,158 @@ def acompanhados(desde=''):
     ks.discard('')
     return ks
 
+# ───────────────────────── fundos com cota mensal (FII, FIAGRO, FIDC) ─────────────────────────
+# out/2026: FII, FIAGRO e FIDC não mandam o Informe Diário; a cota deles vem dos informes mensais.
+# Só entram os que NÃO têm ticker na B3 (os com ticker o aluno cadastra pela Renda Variável).
+# Ticker = ISIN com as 4 letras do código (BRFVPQCTF015 → FVPQ11). A marcação "negociado em bolsa"
+# que o próprio fundo declara não serve: o XP Logístico Prime Yield II diz "S" e não tem ticker.
+URL_FII = 'https://dados.cvm.gov.br/dados/FII/DOC/INF_MENSAL/DADOS/inf_mensal_fii_{y}.zip'
+URL_FIAGRO = 'https://dados.cvm.gov.br/dados/FIAGRO/DOC/INF_MENSAL/DADOS/inf_mensal_fiagro_{ym}.zip'
+URL_FIDC = 'https://dados.cvm.gov.br/dados/FIDC/DOC/INF_MENSAL/DADOS/inf_mensal_fidc_{ym}.zip'
+URL_FIDC_ANO = 'https://dados.cvm.gov.br/dados/FIDC/DOC/INF_MENSAL/DADOS/HIST/inf_mensal_fidc_{y}.zip'
+FII_DESDE = 2016              # primeiro ano do informe mensal de FII
+FIDC_DESDE = 2013             # primeiro ano do informe mensal de FIDC
+FIDC_MES_DESDE = (2025, 1)    # antes disso a CVM publica o FIDC por ano (pasta HIST)
+FIAGRO_DESDE = (2025, 5)      # informe próprio do FIAGRO; antes ele vinha no informe de FII
+VERSAO_MENSAIS = 1            # subir para refazer o histórico mensal na próxima rodada
+TICKER = re.compile(r'^BR[A-Z]{4}CTF')
+
+def fim_mes(ym):
+    y, m = int(ym[:4]), int(ym[5:7])
+    prox = date(y + (m == 12), m % 12 + 1, 1)
+    return (prox - timedelta(days=1)).isoformat()
+
+def csvs(bruto, padrao):
+    """Linhas (dict) dos CSVs do zip cujo nome bate com a expressão 'padrao'."""
+    z = zipfile.ZipFile(io.BytesIO(bruto))
+    for info in z.infolist():
+        nome = info.filename.lower().rsplit('/', 1)[-1]
+        if nome.endswith('.csv') and re.search(padrao, nome):
+            texto = ler_texto(z.read(info.filename)).splitlines()
+            if not texto: continue
+            cab = texto[0].split(';')
+            for l in texto[1:]:
+                if l: yield dict(zip(cab, l.split(';')))
+
+def campo(r, *nomes):
+    for n in nomes:
+        v = r.get(n)
+        if v not in (None, ''): return v
+    return ''
+
+def serie_fidc(txt):
+    """Código estável da série do FIDC a partir do texto da CVM: 'Subclasse Senior Série 1' → SEN1,
+    'Subclasse Subordinada Mezanino 2 | Série 3' → MEZ2S3, 'Subclasse Subordinada  |' → SUB."""
+    import unicodedata
+    t = unicodedata.normalize('NFKD', txt or '').encode('ascii', 'ignore').decode().upper()
+    tipo = 'MEZ' if 'MEZANINO' in t else 'SUB' if 'SUBORD' in t else 'SEN' if re.search(r'S.?NIOR', t) else 'U'
+    return tipo + 'S'.join(re.findall(r'\d+', t))
+
+NOME_SERIE = {'SEN': 'Sênior', 'MEZ': 'Mezanino', 'SUB': 'Subordinada', 'U': 'Série'}
+def nome_serie(cod):
+    m = re.match(r'([A-Z]+?)(\d.*)?$', cod)
+    tipo, resto = (m.group(1), m.group(2) or '') if m else (cod, '')
+    partes = resto.split('S') if resto else []
+    txt = NOME_SERIE.get(tipo, tipo) + (' ' + partes[0] if partes else '')
+    return txt + (' Série ' + partes[1] if len(partes) > 1 else '')
+
+def ler_mensais(desde):
+    """desde = (ano, mês). Devolve serie {chave: {"AAAA-MM": [cota, pl, cotistas, dy%]}} e
+    info {chave: {"isin", "serie"}} dos FII, FIAGRO e FIDC (todos, com ou sem ticker)."""
+    hoje = date.today()
+    atual = (hoje.year, hoje.month)
+    lim_imutavel = mes_menos(atual, 3)
+    serie = defaultdict(dict)
+    info = defaultdict(dict)
+    versao = {}                 # (chave, mês) -> versão já gravada (a CVM republica com versão maior)
+
+    def guardar(k, ym, v, cota, pl, nc, dy):
+        if not k or (k, ym) in versao and versao[(k, ym)] > v: return
+        versao[(k, ym)] = v
+        serie[k][ym] = [cota, pl, nc, dy]
+
+    # FII: um arquivo por ano; complemento = cota, PL, cotistas e DY; geral = ISIN
+    for y in range(max(FII_DESDE, desde[0]), atual[0] + 1):
+        bruto = obter(URL_FII.format(y=y), 'fii_%d.zip' % y, y <= atual[0] - 2)
+        if not bruto: continue
+        isin = {}
+        for r in csvs(bruto, r'_geral_'):
+            k = chave(campo(r, 'CNPJ_Fundo_Classe', 'CNPJ_Fundo'))
+            ym = campo(r, 'Data_Referencia')[:7]
+            if k and ym >= isin.get(k, ('', ''))[0]: isin[k] = (ym, campo(r, 'Codigo_ISIN').strip().upper())
+        n = 0
+        for r in csvs(bruto, r'_complemento_'):
+            k = chave(campo(r, 'CNPJ_Fundo_Classe', 'CNPJ_Fundo')); ym = campo(r, 'Data_Referencia')[:7]
+            if not ym[:4].isdigit() or (int(ym[:4]), int(ym[5:7])) < desde: continue
+            q = cota_txt(campo(r, 'Valor_Patrimonial_Cotas'))
+            if not q or (num(q) or 0) <= 0: continue
+            dy = num(campo(r, 'Percentual_Dividend_Yield_Mes'))
+            guardar(k, ym, inteiro(campo(r, 'Versao')) or 0, q, inteiro(campo(r, 'Patrimonio_Liquido')),
+                    inteiro(campo(r, 'Total_Numero_Cotistas')), round(dy * 100, 4) if dy is not None else None)
+            n += 1
+        for k, (ym, i) in isin.items():
+            if ym >= info[k].get('_ym', ''): info[k].update({'isin': i, '_ym': ym})
+        log('  FII %d: %d linhas' % (y, n))
+
+    # FIAGRO: um arquivo por mês desde mai/2025 (o DY já vem em %)
+    for y, m in meses(max(FIAGRO_DESDE, desde), atual):
+        ym = '%04d%02d' % (y, m)
+        bruto = obter(URL_FIAGRO.format(ym=ym), 'fiagro_%s.zip' % ym, (y, m) <= lim_imutavel)
+        if not bruto: continue
+        n = 0
+        for r in csvs(bruto, r'^inf_mensal_fiagro_\d{6}\.csv$'):
+            k = chave(campo(r, 'CNPJ_Classe')); ref = campo(r, 'Data_Referencia')[:7]
+            q = cota_txt(campo(r, 'Valor_Patrimonial_Cotas'))
+            if not k or not q or (num(q) or 0) <= 0: continue
+            guardar(k, ref, inteiro(campo(r, 'Versao')) or 0, q, inteiro(campo(r, 'Patrimonio_Liquido')),
+                    inteiro(campo(r, 'Numero_Cotistas')), num(campo(r, 'Dividend_Yield_Mes')))
+            if ref >= info[k].get('_ym', ''): info[k].update({'isin': campo(r, 'Codigo_ISIN').strip().upper(), '_ym': ref})
+            n += 1
+        log('  FIAGRO %s: %d linhas' % (ym, n))
+
+    # FIDC: cota por série (tab X_2) e cotistas por série (tab X_1). Junta por código da série.
+    bruto_fidc = defaultdict(lambda: defaultdict(dict))   # cnpj -> mês -> código -> [cota, pl, nc]
+    nc_fidc = defaultdict(lambda: defaultdict(int))       # cnpj -> mês -> cotistas de todas as séries
+    arqs = [(URL_FIDC_ANO.format(y=y), 'fidc_%d.zip' % y, True) for y in range(max(FIDC_DESDE, desde[0]), FIDC_MES_DESDE[0])]
+    arqs += [(URL_FIDC.format(ym='%04d%02d' % ym), 'fidc_%04d%02d.zip' % ym, ym <= lim_imutavel) for ym in meses(max(FIDC_MES_DESDE, desde), atual)]
+    for url, nome, imut in arqs:
+        bruto = obter(url, nome, imut)
+        if not bruto: continue
+        n = 0
+        for r in csvs(bruto, r'_tab_x_2_\d{4,6}\.csv$'):
+            cn = cnpj(campo(r, 'CNPJ_FUNDO_CLASSE', 'CNPJ_FUNDO')); ym = campo(r, 'DT_COMPTC')[:7]
+            if not cn or not ym[:4].isdigit() or (int(ym[:4]), int(ym[5:7])) < desde: continue
+            q = cota_txt(campo(r, 'TAB_X_VL_COTA'))
+            if not q or (num(q) or 0) <= 0: continue
+            qt = num(campo(r, 'TAB_X_QT_COTA')) or 0
+            bruto_fidc[cn][ym][serie_fidc(campo(r, 'TAB_X_CLASSE_SERIE'))] = [q, int(round(qt * num(q))) or None, None]
+            n += 1
+        for r in csvs(bruto, r'_tab_x_1_\d{4,6}\.csv$'):
+            cn = cnpj(campo(r, 'CNPJ_FUNDO_CLASSE', 'CNPJ_FUNDO')); ym = campo(r, 'DT_COMPTC')[:7]
+            nc = inteiro(campo(r, 'TAB_X_NR_COTST')) or 0
+            if cn and ym: nc_fidc[cn][ym] += nc
+            s = bruto_fidc.get(cn, {}).get(ym, {}).get(serie_fidc(campo(r, 'TAB_X_CLASSE_SERIE')))
+            if s is not None: s[2] = (s[2] or 0) + nc
+        log('  %s: %d séries' % (nome, n))
+    # Uma série com cota no último mês: a chave é o CNPJ. Várias: CNPJ_SÉRIE (ex.: ..._SEN1).
+    for cn, por_mes in bruto_fidc.items():
+        ult = por_mes[max(por_mes)]
+        ativas = sorted(ult)
+        if len(ativas) <= 1:
+            pref = ativas[0] if ativas else None
+            for ym, s in por_mes.items():
+                v = s.get(pref) if pref in s else (next(iter(s.values())) if len(s) == 1 else None)
+                # com uma série só, os cotistas às vezes vêm na linha de outra série (sem cota): soma todas
+                if v: serie[cn][ym] = [v[0], v[1], nc_fidc[cn].get(ym) or v[2], None]
+        else:
+            for cod in ativas:
+                k = cn + '_' + cod
+                info[k]['serie'] = nome_serie(cod)
+                for ym, s in por_mes.items():
+                    if cod in s: serie[k][ym] = [s[cod][0], s[cod][1], s[cod][2], None]
+    log('Informes mensais (FII, FIAGRO, FIDC): %d fundos/séries' % len(serie))
+    return serie, info
+
 # ───────────────────────── principal ─────────────────────────
 def principal():
     t0 = time.time()
@@ -353,11 +505,18 @@ def principal():
     hist_dir = os.path.join(OUT, 'historico')
     os.makedirs(hist_dir, exist_ok=True)
     ja_tem = {f[:-5] for f in os.listdir(hist_dir) if f.endswith('.json')}
+    # out/2026: FII, FIAGRO e FIDC sem ticker (cota mensal). Na primeira rodada com eles, busca o histórico todo.
+    mens_completo = completo or meta_ant.get('mensais') != VERSAO_MENSAIS
+    serie_m, info_m = ler_mensais((FIDC_DESDE, 1) if mens_completo else ini_janela)
+    com_ticker = {k for k, i in info_m.items() if TICKER.match(i.get('isin', ''))}
+    so_mensal = {k for k in serie_m if k not in com_ticker and (k in cad or k.split('_')[0] in cad)}
+    log('Cota mensal: %d sem ticker entram · %d com ticker ficam na Renda Variável' % (len(so_mensal), len(com_ticker & set(serie_m))))
     seguir = {k for k in acompanhados(meta_ant.get('fs_ate', '')) if k in cad or k.split('_')[0] in cad} | ja_tem
+    seguir -= so_mensal - ja_tem               # cota mensal não tem histórico diário para buscar
     novos_hist = seguir - ja_tem
     log('Modo %s · histórico novo para %d fundos' % ('COMPLETO' if completo else 'normal', len(novos_hist)))
 
-    # mensal: {chave: {"AAAA-MM": [data, cota, pl, cotistas]}}
+    # mensal: {chave: {"AAAA-MM": [data, cota, pl, cotistas, dy%]}} (dy só nos de cota mensal)
     mensal = defaultdict(dict)
     if not completo:
         pasta = os.path.join(OUT, 'mensal')
@@ -365,7 +524,7 @@ def principal():
             for k, serie in (carregar('mensal/' + f, {}) or {}).items():
                 for item in serie:
                     if (int(item[0][:4]), int(item[0][5:7])) < ini_janela:
-                        mensal[k][item[0]] = ['', item[1], item[2] if len(item) > 2 else None, item[3] if len(item) > 3 else None]
+                        mensal[k][item[0]] = ['', item[1], item[2] if len(item) > 2 else None, item[3] if len(item) > 3 else None, item[4] if len(item) > 4 else None]
 
     diario = defaultdict(list)          # janela de 13 meses
     ultima = {}                         # chave -> [data, cota, pl, cotistas]
@@ -415,6 +574,22 @@ def principal():
         log('  %s: %d linhas%s' % (nome, n, ' (janela)' if na_janela else ''))
     log('Linhas lidas: %d' % total)
 
+    # ── cota mensal: entra no mensal e, se ainda reporta (últimos 4 meses), vira "cota recente"
+    #    Fundo que também manda o Informe Diário fica com a cota diária.
+    diarios = {k.split('_')[0] for k in ultima}
+    for k in com_ticker: mensal.pop(k, None)
+    mensais = set()
+    lim_recente = '%04d-%02d' % mes_menos(atual, 4)
+    for k in so_mensal:
+        if k.split('_')[0] in diarios: continue
+        for ym, (q, pl, nc, dy) in serie_m[k].items():
+            mensal[k][ym] = [fim_mes(ym), q, pl, nc, dy]
+        ym = max(serie_m[k])
+        if ym >= lim_recente:
+            q, pl, nc, dy = serie_m[k][ym]
+            ultima[k] = [fim_mes(ym), q, pl, nc]
+            mensais.add(k)
+
     # ── diário (13 meses), por prefixo
     import shutil
     for pasta in ('diario', 'mensal'):
@@ -436,7 +611,7 @@ def principal():
     # ── mensal, por prefixo
     shards = defaultdict(dict)
     for k, por_mes in mensal.items():
-        shards[prefixo(k)][k] = [[m, v[1], v[2], v[3]] for m, v in sorted(por_mes.items())]
+        shards[prefixo(k)][k] = [[m, v[1], v[2], v[3]] + ([v[4]] if len(v) > 4 and v[4] is not None else []) for m, v in sorted(por_mes.items())]
     for p, d in shards.items():
         salvar('mensal/%s.json' % p, d)
 
@@ -468,6 +643,9 @@ def principal():
         e['k'] = k
         u = origem.get(k)
         if u: e['q'] = u[0]; e['pl'] = u[2]; e['nc'] = u[3]
+        if k in so_mensal and k.split('_')[0] not in diarios:
+            e['fr'] = 'M'                                  # cota mensal (FII, FIAGRO, FIDC sem ticker)
+            if info_m.get(k, {}).get('serie'): e['n'] = (e.get('n') or '') + ' · ' + info_m[k]['serie']
         return {c: v for c, v in e.items() if v not in ('', None)}
     indice = [entrada(k, ultima) for k in sorted(ultima)]
     salvar('indice.json', indice)
@@ -489,6 +667,8 @@ def principal():
         'fundos_com_cota_recente': len(ultima),
         'fundos_encerrados_no_indice': len(encerrados),
         'acompanhados': len(seguir),
+        'cota_mensal': len(mensais),
+        'mensais': VERSAO_MENSAIS,
         'lista_dos_alunos': {'situacao': ESTADO_FS['situacao'], 'novos_nesta_rodada': ESTADO_FS['novos_lidos']},
         'fs_ate': ESTADO_FS['ate'],
         'eventos': len(eventos),
